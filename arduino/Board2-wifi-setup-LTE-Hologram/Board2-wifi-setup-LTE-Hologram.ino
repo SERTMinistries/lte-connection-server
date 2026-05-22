@@ -90,7 +90,7 @@ int strongestRssiValue = -999;
 // =====================================================
 // EVENT HISTORY TABLE
 // =====================================================
-const int MAX_EVENTS    = 100;
+const int MAX_EVENTS    = 50;
 const int ROWS_PER_PAGE = 10;
 
 String eventType[MAX_EVENTS];
