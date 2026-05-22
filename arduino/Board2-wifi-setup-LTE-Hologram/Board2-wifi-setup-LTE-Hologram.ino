@@ -88,9 +88,71 @@ String strongestSatellites = "0";
 int strongestRssiValue = -999;
 
 // =====================================================
+// MAC ADDRESS WATCH LIST
+// =====================================================
+const int MAX_WATCHED_MACS = 10;
+
+String watchedMacs[MAX_WATCHED_MACS];
+bool watchedMacAlert[MAX_WATCHED_MACS];
+unsigned long lastWatchedMacSeen[MAX_WATCHED_MACS];
+int watchedMacCount = 0;
+
+void initWatchList() {
+  for (int i = 0; i < MAX_WATCHED_MACS; i++) {
+    watchedMacs[i] = "";
+    watchedMacAlert[i] = false;
+    lastWatchedMacSeen[i] = 0;
+  }
+}
+
+int findWatchedMacIndex(String mac) {
+  mac.toLowerCase();
+  for (int i = 0; i < watchedMacCount; i++) {
+    if (watchedMacs[i].equalsIgnoreCase(mac)) return i;
+  }
+  return -1;
+}
+
+bool isMacWatched(String mac) {
+  return findWatchedMacIndex(mac) != -1;
+}
+
+bool addWatchedMac(String mac) {
+  mac.toLowerCase();
+  if (watchedMacCount >= MAX_WATCHED_MACS) return false;
+  if (findWatchedMacIndex(mac) != -1) return false;
+  watchedMacs[watchedMacCount] = mac;
+  watchedMacAlert[watchedMacCount] = false;
+  lastWatchedMacSeen[watchedMacCount] = 0;
+  watchedMacCount++;
+  return true;
+}
+
+bool removeWatchedMac(String mac) {
+  int index = findWatchedMacIndex(mac);
+  if (index == -1) return false;
+  for (int i = index; i < watchedMacCount - 1; i++) {
+    watchedMacs[i] = watchedMacs[i + 1];
+    watchedMacAlert[i] = watchedMacAlert[i + 1];
+    lastWatchedMacSeen[i] = lastWatchedMacSeen[i + 1];
+  }
+  watchedMacCount--;
+  return true;
+}
+
+void checkWatchedMac(String mac, String name) {
+  int index = findWatchedMacIndex(mac);
+  if (index != -1) {
+    watchedMacAlert[index] = true;
+    lastWatchedMacSeen[index] = millis();
+    Serial.println("ALERT: Watched MAC detected! " + mac + " (" + name + ")");
+  }
+}
+
+// =====================================================
 // EVENT HISTORY TABLE
 // =====================================================
-const int MAX_EVENTS    = 50;
+const int MAX_EVENTS    = 20;
 const int ROWS_PER_PAGE = 10;
 
 String eventType[MAX_EVENTS];
@@ -222,6 +284,7 @@ void parseLoggerLine(String line) {
 
   totalEvents++;
   updateStrongestDevice();
+  checkWatchedMac(latestBleAddress, latestBleName);
   addEventToTable(
     latestEvent, latestLat, latestLng, latestGpsStatus, latestSatellites,
     latestBleName, latestBleAddress, latestBleRssi, latestBleSignal, lastRawLine
@@ -454,7 +517,10 @@ String getDashboardHTML(int page, String filterEvent, String sortBy, String sear
   html += "tr:nth-child(even){background:#1f1f1f;}";
   html += ".badge{display:inline-block;padding:3px 6px;border-radius:6px;background:#555;color:#fff;font-size:11px;}";
   html += ".new{background:#2563eb;} .left{background:#dc2626;} .returned{background:#16a34a;}";
-  html += ".strongCard{border:1px solid #22c55e;box-shadow:0 0 12px rgba(34,197,94,.25);}";
+  html += ".strongCard{border:1px solid %2322c55e;box-shadow:0 0 12px rgba(34,197,94,.25);}";
+  html += ".watchCard{border:1px solid %232563eb;box-shadow:0 0 12px rgba(37,99,235,.25);}";
+  html += ".alertCard{border:1px solid %23ef4444;box-shadow:0 0 12px rgba(239,68,68,.5);animation:pulse 2s infinite;}";
+  html += "@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.7;}}";
   html += ".bigRssi{font-size:30px;font-weight:bold;color:#22c55e;}";
   html += ".smallNote{font-size:12px;color:#aaa;}";
   html += ".pager a,.pager span,.clearBtn,button{display:inline-block;margin:4px;padding:8px 12px;border-radius:6px;background:#333;color:#fff;text-decoration:none;border:0;}";
@@ -474,6 +540,51 @@ String getDashboardHTML(int page, String filterEvent, String sortBy, String sear
   html += "<br>Total Events: " + String(totalEvents);
   html += "<br>Stored Rows: " + String(eventCount) + " / " + String(MAX_EVENTS);
   html += "</div>";
+
+  // WATCH LIST SECTION
+  html += "<div class='watchCard'><b>MAC Address Watch List</b> (" + String(watchedMacCount) + "/" + String(MAX_WATCHED_MACS) + ")<br>";
+  html += "<span class='smallNote'>Add MAC addresses to get alerts when detected.</span><br><br>";
+  
+  // Add form
+  html += "<form action='/addWatch' method='get' style='margin:0 0 10px 0;'>";
+  html += "<input type='text' name='mac' placeholder='AA:BB:CC:DD:EE:FF' pattern='[0-9A-Fa-f:]{17}' style='width:200px;display:inline;'>";
+  html += " <button type='submit'>Add MAC</button>";
+  html += "</form>";
+  
+  // Watch list
+  if (watchedMacCount == 0) {
+    html += "<span class='smallNote'>No MAC addresses being watched.</span>";
+  } else {
+    html += "<div style='background:#1a1a1a;padding:8px;border-radius:6px;'>";
+    for (int i = 0; i < watchedMacCount; i++) {
+      bool isAlert = watchedMacAlert[i];
+      unsigned long seenAgo = (millis() - lastWatchedMacSeen[i]) / 1000;
+      
+      if (isAlert) {
+        html += "<div class='alertCard' style='padding:8px;margin:4px 0;border-radius:6px;'>";
+        html += "<b>🚨 ALERT: " + htmlEscape(watchedMacs[i]) + "</b>";
+        if (lastWatchedMacSeen[i] > 0) {
+          html += "<br><span class='good'>Seen " + String(seenAgo) + "s ago</span>";
+        }
+        html += "<br><a href='/removeWatch?mac=" + urlEncode(watchedMacs[i]) + "' class='clearBtn' style='font-size:11px;'>Remove</a>";
+        html += "</div>";
+      } else {
+        html += "<div style='padding:6px;margin:4px 0;background:#222;border-radius:6px;'>";
+        html += "<span class='mono'>" + htmlEscape(watchedMacs[i]) + "</span>";
+        html += " <a href='/removeWatch?mac=" + urlEncode(watchedMacs[i]) + "' class='clearBtn' style='font-size:11px;'>Remove</a>";
+        html += "</div>";
+      }
+    }
+    html += "</div>";
+  }
+  html += "</div>";
+  
+  // Clear old alerts after 30 seconds
+  for (int i = 0; i < watchedMacCount; i++) {
+    if (watchedMacAlert[i] && (millis() - lastWatchedMacSeen[i]) > 30000) {
+      watchedMacAlert[i] = false;
+    }
+  }
 
   html += "<div class='strongCard'><b>Strongest BLE Device</b><br>";
   html += "<span class='smallNote'>RSSI closest to zero wins.</span><br><br>";
@@ -564,7 +675,12 @@ void setup() {
   bool started = WiFi.softAP(ssid, password, 1);
   Serial.println(started ? "Wi-Fi dashboard started." : "Wi-Fi dashboard failed.");
 
+  initWatchList();
+  Serial.println("Watch list initialized.");
+
   server.on("/", handleRoot);
+  server.on("/addWatch", handleAddWatch);
+  server.on("/removeWatch", handleRemoveWatch);
   server.begin();
 
   Serial.print("Wi-Fi: "); Serial.println(ssid);
@@ -573,13 +689,48 @@ void setup() {
   initLTE();
 
   Serial.println("Dashboard ready.");
+  Serial.print("Free heap: "); Serial.println(ESP.getFreeHeap());
 }
 
 // =====================================================
 // LOOP
 // =====================================================
+void handleAddWatch() {
+  String mac = server.arg("mac");
+  if (mac.length() == 0) {
+    server.send(400, "text/plain", "Missing mac parameter");
+    return;
+  }
+  if (addWatchedMac(mac)) {
+    server.send(200, "text/plain", "Added: " + mac);
+  } else {
+    server.send(400, "text/plain", "Failed to add (duplicate or list full)");
+  }
+}
+
+void handleRemoveWatch() {
+  String mac = server.arg("mac");
+  if (mac.length() == 0) {
+    server.send(400, "text/plain", "Missing mac parameter");
+    return;
+  }
+  if (removeWatchedMac(mac)) {
+    server.send(200, "text/plain", "Removed: " + mac);
+  } else {
+    server.send(404, "text/plain", "MAC not found in watch list");
+  }
+}
+
 void loop() {
   server.handleClient();
+
+  // Periodic memory check (every 10 seconds)
+  static unsigned long lastMemCheck = 0;
+  if (millis() - lastMemCheck > 10000) {
+    lastMemCheck = millis();
+    Serial.print("Heap: "); Serial.print(ESP.getFreeHeap());
+    Serial.print(" | Events: "); Serial.println(eventCount);
+  }
 
   while (LOGGER.available()) {
     String line = LOGGER.readStringUntil('\n');
