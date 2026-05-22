@@ -77,7 +77,7 @@ int knownCount = 0;
 // =====================================================
 // STABLE NAME TRACKING
 // =====================================================
-const int MAX_ALIASES = 150;
+const int MAX_ALIASES = 300;
 
 String aliasKey[MAX_ALIASES];
 String aliasLabel[MAX_ALIASES];
