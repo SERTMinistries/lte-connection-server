@@ -34,11 +34,10 @@ TinyGsm modem(SIM7000_SERIAL);
 TinyGsmClient gsmClient(modem);
 
 // =====================================================
-// REMOTE SERVER (ngrok)
+// REMOTE SERVER (Railway)
 // Do not include http:// or https:// in REMOTE_HOST.
-// Update REMOTE_HOST each time ngrok restarts.
 // =====================================================
-const char REMOTE_HOST[] = "observantly-nonindigenous-charlotte.ngrok-free.dev";
+const char REMOTE_HOST[] = "lte-connection-server-production.up.railway.app";
 const int  REMOTE_PORT   = 80;
 const char REMOTE_PATH[] = "/upload";
 
@@ -262,7 +261,6 @@ void uploadOverLTE() {
   gsmClient.print(String("POST ") + REMOTE_PATH + " HTTP/1.1\r\n");
   gsmClient.print(String("Host: ") + REMOTE_HOST + "\r\n");
   gsmClient.print("Content-Type: application/json\r\n");
-  gsmClient.print("ngrok-skip-browser-warning: true\r\n");
   gsmClient.print("Content-Length: " + String(body.length()) + "\r\n");
   gsmClient.print("Connection: close\r\n\r\n");
   gsmClient.print(body);

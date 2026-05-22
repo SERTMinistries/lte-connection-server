@@ -261,7 +261,6 @@ void uploadOverLTE() {
   gsmClient.print(String("POST ") + REMOTE_PATH + " HTTP/1.1\r\n");
   gsmClient.print(String("Host: ") + REMOTE_HOST + "\r\n");
   gsmClient.print("Content-Type: application/json\r\n");
-  gsmClient.print("ngrok-skip-browser-warning: true\r\n");
   gsmClient.print("Content-Length: " + String(body.length()) + "\r\n");
   gsmClient.print("Connection: close\r\n\r\n");
   gsmClient.print(body);
