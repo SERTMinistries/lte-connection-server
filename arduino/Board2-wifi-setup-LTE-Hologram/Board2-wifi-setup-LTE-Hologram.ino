@@ -94,7 +94,7 @@ const unsigned long STRONGEST_TIMEOUT_MS = 30000;  // Reset after 30 sec no data
 // =====================================================
 // MAC ADDRESS WATCH LIST
 // =====================================================
-const int MAX_WATCHED_MACS = 12;
+const int MAX_WATCHED_MACS = 15;
 
 String watchedMacs[MAX_WATCHED_MACS];
 bool watchedMacAlert[MAX_WATCHED_MACS];
@@ -119,6 +119,7 @@ void initWatchList() {
   addWatchedMac("41:42:69:BF:A4:49");
   addWatchedMac("41:42:49:AD:71:73");
   addWatchedMac("41:42:C5:31:2E:E9");
+  addWatchedMac("40:00:00:EE:5E:89");
 }
 
 int findWatchedMacIndex(String mac) {

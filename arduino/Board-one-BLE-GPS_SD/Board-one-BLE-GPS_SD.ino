@@ -3,6 +3,7 @@
 #include <TinyGPSPlus.h>
 #include <HardwareSerial.h>
 #include <BLEDevice.h>
+#include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 
@@ -50,8 +51,8 @@ HardwareSerial DASHBOARD(2);
 // =====================================================
 BLEScan* pBLEScan;
 
-const int scanTime = 15;  // Increased from 5 to 15 seconds for better detection
-const unsigned long scanInterval = 10000;  // Reduced from 60s to 10s for faster detection
+const int scanTime = 30;  // 30 seconds to catch infrequent BLE advertisers
+const unsigned long scanInterval = 31000;  // Run nearly continuously
 
 unsigned long lastScan = 0;
 unsigned long lastStatusPrint = 0;
@@ -78,7 +79,7 @@ int knownCount = 0;
 // =====================================================
 // TARGET MAC ADDRESSES TO PRIORITIZE (PrimeAudio devices)
 // =====================================================
-const int TARGET_MAC_COUNT = 11;
+const int TARGET_MAC_COUNT = 12;
 const char* targetMacs[TARGET_MAC_COUNT] = {
   "41:42:4a:55:0c:fa",
   "41:42:d2:00:6b:09",
@@ -90,7 +91,8 @@ const char* targetMacs[TARGET_MAC_COUNT] = {
   "41:42:81:69:16:3d",
   "41:42:69:bf:a4:49",
   "41:42:49:ad:71:73",
-  "41:42:c5:31:2e:e9"
+  "41:42:c5:31:2e:e9",
+  "40:00:00:ee:5e:89"
 };
 
 bool isTargetMac(String address) {
@@ -450,8 +452,64 @@ void logEvent(String eventType, String stableName, String realName, String addre
 // =====================================================
 // BLE SCAN
 // =====================================================
+// =====================================================
+// BLE CALLBACK - fires instantly when device detected
+// =====================================================
+class BLECallback : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice device) {
+    String realName = device.haveName() ? device.getName().c_str() : "Unknown BLE Device";
+    String address = device.getAddress().toString().c_str();
+    int rssi = device.getRSSI();
+
+    bool isMacTarget = isTargetMac(address);
+    bool isNameTarget = (realName.indexOf("Prime") >= 0 || realName.indexOf("prime") >= 0 ||
+                         realName.indexOf("PRIME") >= 0 || realName.indexOf("Audio") >= 0);
+
+    // Detect Google Fast Pair service UUID 0xFE2C (used by PrimeAudio/headsets)
+    bool isFastPair = false;
+    if (device.haveServiceUUID()) {
+      String uuid = device.getServiceUUID().toString().c_str();
+      if (uuid.indexOf("fe2c") >= 0 || uuid.indexOf("FE2C") >= 0) {
+        isFastPair = true;
+      }
+    }
+    // Also check service data for FE2C
+    if (!isFastPair && device.haveServiceData()) {
+      String svcData = device.getServiceDataUUID().toString().c_str();
+      if (svcData.indexOf("fe2c") >= 0 || svcData.indexOf("FE2C") >= 0) isFastPair = true;
+    }
+
+    Serial.print("  " + address + " | " + realName + " | RSSI:" + String(rssi));
+    if (isMacTarget) {
+      Serial.println("  <<<<< TARGET MAC!");
+    } else if (isNameTarget) {
+      Serial.println("  <<<<< TARGET NAME! New MAC: " + address);
+    } else if (isFastPair) {
+      Serial.println("  <<<<< FAST PAIR DEVICE! Possible PrimeAudio - MAC: " + address);
+    } else {
+      Serial.println();
+    }
+
+    // Alert and log if MAC, name, or Fast Pair service matches
+    if (isMacTarget || isNameTarget || isFastPair) {
+      String label = isMacTarget ? getStableName(realName, address) : "PrimeAudio-TARGET";
+      int index = findDeviceIndex(address);
+      if (index == -1) {
+        index = addDevice(address, realName, label, rssi);
+        if (index != -1 && !knownLogged[index]) {
+          logEvent("NEW", label, realName, address, rssi);
+          sendToDashboard("NEW", label, realName, address, rssi);
+          knownLogged[index] = true;
+        }
+      }
+      lastBleCount++;
+    }
+  }
+};
+
 void scanBLEAndLog() {
   scanNumber++;
+  lastBleCount = 0;
 
   Serial.println();
   Serial.println("===== BLE SCAN START =====");
@@ -466,61 +524,9 @@ void scanBLEAndLog() {
   readGPS();
   updateGPSValues();
 
-  Serial.println("Scanning BLE...");
-
-  BLEScanResults* results = pBLEScan->start(scanTime, false);
-  int count = results->getCount();
-
-  lastBleCount = count;
-
-  Serial.print("BLE devices found: ");
-  Serial.println(count);
-
-  for (int i = 0; i < count; i++) {
-    readGPS();
-    updateGPSValues();
-
-    BLEAdvertisedDevice device = results->getDevice(i);
-
-    String realName = device.haveName() ? device.getName().c_str() : "Unknown BLE Device";
-    String address = device.getAddress().toString().c_str();
-    int rssi = device.getRSSI();
-
-    // Debug: print every device seen
-    Serial.print("  [" + String(i+1) + "] " + address + " | " + realName + " | RSSI:" + String(rssi));
-    if (isTargetMac(address)) {
-      Serial.println("  <<<<< TARGET!");
-    } else {
-      Serial.println();
-    }
-
-    String stableName = getStableName(realName, address);
-
-    int index = findDeviceIndex(address);
-
-    if (index == -1) {
-      index = addDevice(address, realName, stableName, rssi);
-
-      if (index != -1 && !knownLogged[index]) {
-        logEvent("NEW", stableName, realName, address, rssi);
-        knownLogged[index] = true;
-      }
-    } else {
-      seenThisScan[index] = true;
-      knownName[index] = realName;
-      knownStableName[index] = stableName;
-      knownRssi[index] = rssi;
-
-      // Only log RETURNED if never logged before (first-time only logging)
-      if (knownPresent[index] == false && !knownLogged[index]) {
-        knownPresent[index] = true;
-        logEvent("RETURNED", stableName, realName, address, rssi);
-        knownLogged[index] = true;
-      } else if (knownPresent[index] == false) {
-        knownPresent[index] = true;
-      }
-    }
-  }
+  Serial.println("Scanning BLE (callback mode)...");
+  pBLEScan->start(scanTime, false);
+  pBLEScan->clearResults();
 
   for (int i = 0; i < knownCount; i++) {
     if (knownPresent[i] == true && seenThisScan[i] == false) {
@@ -567,9 +573,10 @@ void setup() {
   BLEDevice::init("");
 
   pBLEScan = BLEDevice::getScan();
-  pBLEScan->setActiveScan(false);  // Passive scan - just listen, don't request scan response
-  pBLEScan->setInterval(50);        // Faster scanning
-  pBLEScan->setWindow(50);          // Maximize time listening for advertisements
+  pBLEScan->setAdvertisedDeviceCallbacks(new BLECallback());
+  pBLEScan->setActiveScan(true);
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);
 
   Serial.println("BLE scanner started.");
   Serial.println("Logger ready.");

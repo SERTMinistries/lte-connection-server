@@ -1,9 +1,13 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
+const { Server } = require("socket.io");
 
 const app = express();
-const PORT = 3000;
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, { cors: { origin: "*" } });
+const PORT = 4000;
 
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -27,6 +31,45 @@ function csvSafe(value) {
   if (value === undefined || value === null) return "";
   return `"${String(value).replace(/"/g, '""')}"`;
 }
+
+// In-memory watchlist (persisted to file)
+const watchlistFile = path.join(__dirname, "logs", "watchlist.json");
+let watchlist = [];
+try {
+  if (fs.existsSync(watchlistFile)) {
+    watchlist = JSON.parse(fs.readFileSync(watchlistFile, "utf8"));
+  }
+} catch {}
+
+function saveWatchlist() {
+  fs.writeFileSync(watchlistFile, JSON.stringify(watchlist, null, 2));
+}
+
+// Socket.IO
+io.on("connection", (socket) => {
+  console.log("UI connected via WebSocket");
+  socket.emit("watchlist", watchlist);
+});
+
+// Watchlist API
+app.get("/watchlist", (req, res) => res.json(watchlist));
+
+app.post("/watchlist", (req, res) => {
+  const mac = (req.body.mac || "").trim().toLowerCase();
+  if (!mac || watchlist.includes(mac)) return res.status(400).json({ error: "Invalid or duplicate MAC" });
+  watchlist.push(mac);
+  saveWatchlist();
+  io.emit("watchlist", watchlist);
+  res.json({ success: true, watchlist });
+});
+
+app.delete("/watchlist/:mac", (req, res) => {
+  const mac = decodeURIComponent(req.params.mac).toLowerCase();
+  watchlist = watchlist.filter((m) => m !== mac);
+  saveWatchlist();
+  io.emit("watchlist", watchlist);
+  res.json({ success: true, watchlist });
+});
 
 app.get("/", (req, res) => {
   res.send(`
@@ -70,6 +113,21 @@ app.post("/upload", (req, res) => {
 
   fs.appendFileSync(csvFile, row + "\n");
 
+  // Check if this MAC is in the watchlist
+  const mac = (data.mac || "").trim().toLowerCase();
+  if (mac && watchlist.includes(mac)) {
+    console.log(`WATCHLIST HIT: ${mac} at ${data.lat},${data.lng} RSSI:${data.rssi}`);
+    io.emit("watchlistHit", {
+      mac: data.mac,
+      rssi: data.rssi,
+      name: data.name,
+      lat: data.lat,
+      lng: data.lng,
+      timestamp: data.timestamp || receivedAt,
+      device_id: data.device_id,
+    });
+  }
+
   res.status(200).json({
     success: true,
     message: "Upload received",
@@ -81,7 +139,9 @@ app.get("/logs", (req, res) => {
   res.sendFile(csvFile);
 });
 
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`ESP32 BLE/GPS LTE server running at http://localhost:${PORT}`);
   console.log(`Upload endpoint: http://localhost:${PORT}/upload`);
+  console.log(`WebSocket: ws://localhost:${PORT}`);
+  console.log(`Watchlist API: http://localhost:${PORT}/watchlist`);
 });
