@@ -64,10 +64,12 @@ String latestLat        = "NO_FIX";
 String latestLng        = "NO_FIX";
 String latestGpsStatus  = "NO_FIX";
 String latestSatellites = "0";
-String latestBleName    = "None";
-String latestBleAddress = "None";
-String latestBleRssi    = "None";
-String latestBleSignal  = "None";
+String latestBleName     = "None";
+String latestBleRealName = "None";
+String latestBleAddress  = "None";
+String latestBleRssi     = "None";
+String latestBleSignal   = "None";
+unsigned long lastDataReceived = 0;
 
 int totalEvents = 0;
 String lastRawLine = "Waiting for logger data...";
@@ -77,6 +79,7 @@ String lastRawLine = "Waiting for logger data...";
 // =====================================================
 String strongestEvent      = "None";
 String strongestName       = "None";
+String strongestRealName   = "None";
 String strongestAddress    = "None";
 String strongestRssi       = "None";
 String strongestSignal     = "None";
@@ -86,11 +89,12 @@ String strongestGpsStatus  = "NO_FIX";
 String strongestSatellites = "0";
 
 int strongestRssiValue = -999;
+const unsigned long STRONGEST_TIMEOUT_MS = 30000;  // Reset after 30 sec no data
 
 // =====================================================
 // MAC ADDRESS WATCH LIST
 // =====================================================
-const int MAX_WATCHED_MACS = 10;
+const int MAX_WATCHED_MACS = 12;
 
 String watchedMacs[MAX_WATCHED_MACS];
 bool watchedMacAlert[MAX_WATCHED_MACS];
@@ -103,6 +107,18 @@ void initWatchList() {
     watchedMacAlert[i] = false;
     lastWatchedMacSeen[i] = 0;
   }
+  // Pre-load target MAC addresses (PrimeAudio devices)
+  addWatchedMac("41:42:4A:55:0C:FA");
+  addWatchedMac("41:42:D2:00:6B:09");
+  addWatchedMac("41:42:BF:56:72:36");
+  addWatchedMac("41:42:EF:AD:83:96");
+  addWatchedMac("41:42:F8:A2:8F:8F");
+  addWatchedMac("41:42:84:CA:20:16");
+  addWatchedMac("41:42:1B:70:67:E0");
+  addWatchedMac("41:42:81:69:16:3D");
+  addWatchedMac("41:42:69:BF:A4:49");
+  addWatchedMac("41:42:49:AD:71:73");
+  addWatchedMac("41:42:C5:31:2E:E9");
 }
 
 int findWatchedMacIndex(String mac) {
@@ -161,6 +177,7 @@ String eventLng[MAX_EVENTS];
 String eventGpsStatus[MAX_EVENTS];
 String eventSatellites[MAX_EVENTS];
 String eventBleName[MAX_EVENTS];
+String eventBleRealName[MAX_EVENTS];
 String eventBleAddress[MAX_EVENTS];
 String eventRssi[MAX_EVENTS];
 String eventSignal[MAX_EVENTS];
@@ -217,12 +234,28 @@ String getField(String data, int index) {
   return "";
 }
 
+void resetStrongestDevice() {
+  strongestRssiValue  = -999;
+  strongestEvent      = "None";
+  strongestName       = "None";
+  strongestRealName   = "None";
+  strongestAddress    = "None";
+  strongestRssi       = "None";
+  strongestSignal     = "None";
+  strongestLat        = "NO_FIX";
+  strongestLng        = "NO_FIX";
+  strongestGpsStatus  = "NO_FIX";
+  strongestSatellites = "0";
+  Serial.println("Strongest device reset (timeout)");
+}
+
 void updateStrongestDevice() {
   int currentRssi = latestBleRssi.toInt();
   if (currentRssi > strongestRssiValue) {
     strongestRssiValue  = currentRssi;
     strongestEvent      = latestEvent;
     strongestName       = latestBleName;
+    strongestRealName   = latestBleRealName;
     strongestAddress    = latestBleAddress;
     strongestRssi       = latestBleRssi;
     strongestSignal     = latestBleSignal;
@@ -230,13 +263,19 @@ void updateStrongestDevice() {
     strongestLng        = latestLng;
     strongestGpsStatus  = latestGpsStatus;
     strongestSatellites = latestSatellites;
-    Serial.println("New strongest BLE device: " + strongestName);
+    Serial.println("New strongest BLE device: " + strongestName + " (" + strongestRealName + ")");
+  }
+}
+
+void checkStrongestTimeout() {
+  if (strongestRssiValue > -999 && (millis() - lastDataReceived) > STRONGEST_TIMEOUT_MS) {
+    resetStrongestDevice();
   }
 }
 
 void addEventToTable(
   String e, String lat, String lng, String gps, String sats,
-  String name, String address, String rssi, String signal, String raw
+  String name, String realName, String address, String rssi, String signal, String raw
 ) {
   if (eventCount >= MAX_EVENTS) {
     for (int i = 1; i < MAX_EVENTS; i++) {
@@ -246,6 +285,7 @@ void addEventToTable(
       eventGpsStatus[i-1]  = eventGpsStatus[i];
       eventSatellites[i-1] = eventSatellites[i];
       eventBleName[i-1]    = eventBleName[i];
+      eventBleRealName[i-1] = eventBleRealName[i];
       eventBleAddress[i-1] = eventBleAddress[i];
       eventRssi[i-1]       = eventRssi[i];
       eventSignal[i-1]     = eventSignal[i];
@@ -260,6 +300,7 @@ void addEventToTable(
   eventGpsStatus[index]  = gps;
   eventSatellites[index] = sats;
   eventBleName[index]    = name;
+  eventBleRealName[index] = realName;
   eventBleAddress[index] = address;
   eventRssi[index]       = rssi;
   eventSignal[index]     = signal;
@@ -271,23 +312,25 @@ void parseLoggerLine(String line) {
   line.trim();
   if (line.length() == 0) return;
 
-  lastRawLine      = line;
-  latestEvent      = getField(line, 0);
-  latestLat        = getField(line, 1);
-  latestLng        = getField(line, 2);
-  latestGpsStatus  = getField(line, 3);
-  latestSatellites = getField(line, 4);
-  latestBleName    = getField(line, 5);
-  latestBleAddress = getField(line, 6);
-  latestBleRssi    = getField(line, 7);
-  latestBleSignal  = getField(line, 8);
+  lastRawLine       = line;
+  lastDataReceived  = millis();
+  latestEvent       = getField(line, 0);
+  latestLat         = getField(line, 1);
+  latestLng         = getField(line, 2);
+  latestGpsStatus   = getField(line, 3);
+  latestSatellites  = getField(line, 4);
+  latestBleName     = getField(line, 5);
+  latestBleRealName = getField(line, 6);
+  latestBleAddress  = getField(line, 7);
+  latestBleRssi     = getField(line, 8);
+  latestBleSignal   = getField(line, 9);
 
   totalEvents++;
   updateStrongestDevice();
   checkWatchedMac(latestBleAddress, latestBleName);
   addEventToTable(
     latestEvent, latestLat, latestLng, latestGpsStatus, latestSatellites,
-    latestBleName, latestBleAddress, latestBleRssi, latestBleSignal, lastRawLine
+    latestBleName, latestBleRealName, latestBleAddress, latestBleRssi, latestBleSignal, lastRawLine
   );
   Serial.println("Received from logger: " + line);
 }
@@ -465,10 +508,10 @@ String getTableHTML(int page, String filterEvent, String sortBy, String searchTe
   html += " | Matching: " + String(filteredCount) + " | Total: " + String(eventCount) + "</div>";
 
   html += "<div class='tableWrap'><table>";
-  html += "<tr><th>#</th><th>Event</th><th>Name</th><th>Address</th><th>RSSI</th><th>Signal</th><th>GPS</th><th>Lat</th><th>Lng</th><th>Sats</th></tr>";
+  html += "<tr><th>#</th><th>Event</th><th>Alias</th><th>Real Name</th><th>Address</th><th>RSSI</th><th>Signal</th><th>GPS</th><th>Lat</th><th>Lng</th><th>Sats</th></tr>";
 
   if (filteredCount == 0) {
-    html += "<tr><td colspan='10'>No matching BLE/GPS events found.</td></tr>";
+    html += "<tr><td colspan='11'>No matching BLE/GPS events found.</td></tr>";
   } else {
     for (int pos = startPosition; pos < endPosition; pos++) {
       int i = filteredIndexes[pos];
@@ -476,6 +519,7 @@ String getTableHTML(int page, String filterEvent, String sortBy, String searchTe
       html += "<td>" + String(i + 1) + "</td>";
       html += "<td>" + getEventBadge(eventType[i]) + "</td>";
       html += "<td>" + htmlEscape(eventBleName[i]) + "</td>";
+      html += "<td>" + htmlEscape(eventBleRealName[i]) + "</td>";
       html += "<td class='mono'>" + htmlEscape(eventBleAddress[i]) + "</td>";
       html += "<td>" + htmlEscape(eventRssi[i]) + "</td>";
       html += "<td>" + htmlEscape(eventSignal[i]) + "</td>";
@@ -511,7 +555,7 @@ String getDashboardHTML(int page, String filterEvent, String sortBy, String sear
   html += ".good{color:#22c55e;} .bad{color:#ef4444;} .warn{color:#facc15;}";
   html += ".mono{font-family:monospace;font-size:12px;}";
   html += ".tableWrap{overflow-x:auto;padding:0;background:#111;}";
-  html += "table{border-collapse:collapse;width:100%;min-width:950px;background:#181818;}";
+  html += "table{border-collapse:collapse;width:100%;min-width:1050px;background:#181818;}";
   html += "th,td{border:1px solid #333;padding:8px;text-align:left;font-size:13px;}";
   html += "th{background:#222;color:#7dd3fc;position:sticky;top:0;}";
   html += "tr:nth-child(even){background:#1f1f1f;}";
@@ -540,6 +584,22 @@ String getDashboardHTML(int page, String filterEvent, String sortBy, String sear
   html += "<br>Total Events: " + String(totalEvents);
   html += "<br>Stored Rows: " + String(eventCount) + " / " + String(MAX_EVENTS);
   html += "</div>";
+
+  // BIG ALERT BANNER - check if any target is currently detected
+  bool anyAlertActive = false;
+  String alertMacs = "";
+  for (int i = 0; i < watchedMacCount; i++) {
+    if (watchedMacAlert[i]) {
+      anyAlertActive = true;
+      if (alertMacs.length() > 0) alertMacs += ", ";
+      alertMacs += watchedMacs[i];
+    }
+  }
+  if (anyAlertActive) {
+    html += "<div style='background:#ef4444;color:#fff;padding:16px;border-radius:8px;margin:10px 0;text-align:center;font-size:18px;font-weight:bold;animation:pulse 1s infinite;'>";
+    html += "🚨 PRIMEAUDIO DETECTED 🚨<br><span style='font-size:14px;font-weight:normal;'>" + alertMacs + "</span>";
+    html += "</div>";
+  }
 
   // WATCH LIST SECTION
   html += "<div class='watchCard'><b>MAC Address Watch List</b> (" + String(watchedMacCount) + "/" + String(MAX_WATCHED_MACS) + ")<br>";
@@ -588,7 +648,8 @@ String getDashboardHTML(int page, String filterEvent, String sortBy, String sear
 
   html += "<div class='strongCard'><b>Strongest BLE Device</b><br>";
   html += "<span class='smallNote'>RSSI closest to zero wins.</span><br><br>";
-  html += "Name: " + htmlEscape(strongestName);
+  html += "Alias: " + htmlEscape(strongestName);
+  html += "<br>Real Name: " + htmlEscape(strongestRealName);
   html += "<br>Address: <span class='mono'>" + htmlEscape(strongestAddress) + "</span>";
   html += "<br>RSSI: <span class='bigRssi'>" + htmlEscape(strongestRssi) + "</span>";
   html += "<br>Signal: " + htmlEscape(strongestSignal);
@@ -602,7 +663,8 @@ String getDashboardHTML(int page, String filterEvent, String sortBy, String sear
 
   html += "<div><b>Latest BLE Event</b><br>";
   html += "Event: " + getEventBadge(latestEvent);
-  html += "<br>Name: " + htmlEscape(latestBleName);
+  html += "<br>Alias: " + htmlEscape(latestBleName);
+  html += "<br>Real Name: " + htmlEscape(latestBleRealName);
   html += "<br>Address: <span class='mono'>" + htmlEscape(latestBleAddress) + "</span>";
   html += "<br>RSSI: " + htmlEscape(latestBleRssi);
   html += "<br>Signal: " + htmlEscape(latestBleSignal);
@@ -723,6 +785,9 @@ void handleRemoveWatch() {
 
 void loop() {
   server.handleClient();
+
+  // Check if strongest device should reset (no data timeout)
+  checkStrongestTimeout();
 
   // Periodic memory check (every 10 seconds)
   static unsigned long lastMemCheck = 0;

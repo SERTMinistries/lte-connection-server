@@ -50,8 +50,8 @@ HardwareSerial DASHBOARD(2);
 // =====================================================
 BLEScan* pBLEScan;
 
-const int scanTime = 5;
-const unsigned long scanInterval = 60000;
+const int scanTime = 15;  // Increased from 5 to 15 seconds for better detection
+const unsigned long scanInterval = 10000;  // Reduced from 60s to 10s for faster detection
 
 unsigned long lastScan = 0;
 unsigned long lastStatusPrint = 0;
@@ -71,8 +71,35 @@ String knownStableName[MAX_DEVICES];
 int knownRssi[MAX_DEVICES];
 bool knownPresent[MAX_DEVICES];
 bool seenThisScan[MAX_DEVICES];
+bool knownLogged[MAX_DEVICES];
 
 int knownCount = 0;
+
+// =====================================================
+// TARGET MAC ADDRESSES TO PRIORITIZE (PrimeAudio devices)
+// =====================================================
+const int TARGET_MAC_COUNT = 11;
+const char* targetMacs[TARGET_MAC_COUNT] = {
+  "41:42:4a:55:0c:fa",
+  "41:42:d2:00:6b:09",
+  "41:42:bf:56:72:36",
+  "41:42:ef:ad:83:96",
+  "41:42:f8:a2:8f:8f",
+  "41:42:84:ca:20:16",
+  "41:42:1b:70:67:e0",
+  "41:42:81:69:16:3d",
+  "41:42:69:bf:a4:49",
+  "41:42:49:ad:71:73",
+  "41:42:c5:31:2e:e9"
+};
+
+bool isTargetMac(String address) {
+  address.toLowerCase();
+  for (int i = 0; i < TARGET_MAC_COUNT; i++) {
+    if (address.equals(targetMacs[i])) return true;
+  }
+  return false;
+}
 
 // =====================================================
 // STABLE NAME TRACKING
@@ -292,6 +319,7 @@ int addDevice(String address, String name, String stableName, int rssi) {
   knownRssi[index] = rssi;
   knownPresent[index] = true;
   seenThisScan[index] = true;
+  knownLogged[index] = false;
 
   knownCount++;
 
@@ -356,6 +384,8 @@ void sendToDashboard(String eventType, String stableName, String realName, Strin
   dashboardLine += satellites;
   dashboardLine += ",";
   dashboardLine += cleanCSV(stableName);
+  dashboardLine += ",";
+  dashboardLine += cleanCSV(realName);
   dashboardLine += ",";
   dashboardLine += address;
   dashboardLine += ",";
@@ -431,6 +461,7 @@ void scanBLEAndLog() {
   for (int i = 0; i < knownCount; i++) {
     seenThisScan[i] = false;
   }
+  // Note: knownLogged[] persists across scans (not reset)
 
   readGPS();
   updateGPSValues();
@@ -455,6 +486,14 @@ void scanBLEAndLog() {
     String address = device.getAddress().toString().c_str();
     int rssi = device.getRSSI();
 
+    // Debug: print every device seen
+    Serial.print("  [" + String(i+1) + "] " + address + " | " + realName + " | RSSI:" + String(rssi));
+    if (isTargetMac(address)) {
+      Serial.println("  <<<<< TARGET!");
+    } else {
+      Serial.println();
+    }
+
     String stableName = getStableName(realName, address);
 
     int index = findDeviceIndex(address);
@@ -462,8 +501,9 @@ void scanBLEAndLog() {
     if (index == -1) {
       index = addDevice(address, realName, stableName, rssi);
 
-      if (index != -1) {
+      if (index != -1 && !knownLogged[index]) {
         logEvent("NEW", stableName, realName, address, rssi);
+        knownLogged[index] = true;
       }
     } else {
       seenThisScan[index] = true;
@@ -471,9 +511,13 @@ void scanBLEAndLog() {
       knownStableName[index] = stableName;
       knownRssi[index] = rssi;
 
-      if (knownPresent[index] == false) {
+      // Only log RETURNED if never logged before (first-time only logging)
+      if (knownPresent[index] == false && !knownLogged[index]) {
         knownPresent[index] = true;
         logEvent("RETURNED", stableName, realName, address, rssi);
+        knownLogged[index] = true;
+      } else if (knownPresent[index] == false) {
+        knownPresent[index] = true;
       }
     }
   }
@@ -481,7 +525,7 @@ void scanBLEAndLog() {
   for (int i = 0; i < knownCount; i++) {
     if (knownPresent[i] == true && seenThisScan[i] == false) {
       knownPresent[i] = false;
-      logEvent("LEFT", knownStableName[i], knownName[i], knownAddress[i], knownRssi[i]);
+      // No LEFT logging - only first detection is recorded
     }
   }
 
@@ -523,9 +567,9 @@ void setup() {
   BLEDevice::init("");
 
   pBLEScan = BLEDevice::getScan();
-  pBLEScan->setActiveScan(true);
-  pBLEScan->setInterval(100);
-  pBLEScan->setWindow(99);
+  pBLEScan->setActiveScan(false);  // Passive scan - just listen, don't request scan response
+  pBLEScan->setInterval(50);        // Faster scanning
+  pBLEScan->setWindow(50);          // Maximize time listening for advertisements
 
   Serial.println("BLE scanner started.");
   Serial.println("Logger ready.");
